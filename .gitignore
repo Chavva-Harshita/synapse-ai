@@ -1,0 +1,37 @@
+# Node
+node_modules/
+frontend/node_modules/
+
+# Build
+dist/
+build/
+
+# Environment
+.env
+.env.local
+.env.*
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+
+# VS Code
+.vscode/
+
+# Uploads
+uploads/
+backend/uploads/
+
+# Vector DB
+chroma_db/
+backend/chroma_db/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
