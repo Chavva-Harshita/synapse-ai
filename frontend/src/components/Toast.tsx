@@ -79,7 +79,7 @@ export default function ToastContainer() {
             <div className="flex-1 min-w-0">
               <p className="text-sm font-semibold text-slate-100">{toast.title}</p>
               {toast.message && (
-                <p className="mt-0.5 text-xs text-slate-400 whitespace-pre-line">{toast.message}</p>
+                <p className="mt-0.5 text-xs text-slate-400">{toast.message}</p>
               )}
             </div>
 
@@ -106,3 +106,4 @@ export default function ToastContainer() {
     </div>
   )
 }
+
