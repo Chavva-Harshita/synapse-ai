@@ -121,7 +121,7 @@ export default function App() {
               </div>
             </header>
 
-            <div className="grid grid-cols-1 gap-5 md:grid-cols-[340px_1fr]">
+            <div className="grid grid-cols-1 gap-5 md:grid-cols-[340px_1fr] items-stretch">
               <aside className="glass-card rounded-2xl p-4 transition-all duration-300 hover:shadow-[0_10px_40px_rgba(99,102,241,0.1)]">
                 <UploadArea onUploaded={onUploaded} />
                 <div className="mt-5 h-px bg-gradient-to-r from-transparent via-white/10 to-transparent" />
@@ -134,7 +134,6 @@ export default function App() {
                 <ChatPanel messages={messages} onSend={onSendMessage} selectedDocIds={selectedDocIds} />
               </main>
             </div>
-
             <footer className="mt-6 text-center">
               <p className="text-[11px] text-slate-700 flex items-center justify-center gap-1.5">
                 <Cpu className="h-3 w-3" />
