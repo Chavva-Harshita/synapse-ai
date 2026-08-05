@@ -130,11 +130,11 @@ export default function App() {
                 </div>
               </aside>
 
-              <main className="glass-card rounded-2xl p-3 md:p-4 transition-all duration-300 hover:shadow-[0_10px_40px_rgba(99,102,241,0.1)]">
+              <main className="overflow-y-auto pb-10">
                 <ChatPanel messages={messages} onSend={onSendMessage} selectedDocIds={selectedDocIds} />
               </main>
             </div>
-            <footer className="mt-6 text-center">
+            <footer className="mt-50 text-center">
               <p className="text-[11px] text-slate-700 flex items-center justify-center gap-1.5">
                 <Cpu className="h-3 w-3" />
                 Powered by Synapse AI · Memory Bank · RAG Engine
