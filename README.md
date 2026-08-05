@@ -568,8 +568,8 @@ SOFTWARE.
 
 **Your Name**
 
-- GitHub: [@your-username](https://github.com/your-username)
-- LinkedIn: [Your Profile](https://www.linkedin.com/in/your-username)
+- GitHub: [Chavva-Harshita]((https://github.com/Chavva-Harshita))
+- LinkedIn: [Harshita Chavva]((https://www.linkedin.com/in/harshita-chavva-86b417316/))
 
 ---
 
