@@ -1,10 +1,17 @@
-import os
 import logging
 
 from fastapi import APIRouter, File, HTTPException, UploadFile # type: ignore
 
 from app.core.config import settings
-from app.services.file_service import store_pdf
+from app.services.file_service import find_stored_pdf, remove_stored_pdf, store_pdf
+from app.services.pdf_errors import (
+    EmptyPDFError,
+    EncryptedPDFError,
+    PDFExtractionError,
+    PDFPageCountExceededError,
+    PDFTextLimitExceededError,
+    PDFUploadTooLargeError,
+)
 from app.services.pdf_text_extractor import extract_pdf_text_from_path
 from app.services.text_chunker import chunk_text
 
@@ -17,6 +24,42 @@ from app.api.routes.upload_rag_models import UploadRagResponse
 # ---------------------------------------------------
 
 log = logging.getLogger(__name__)
+
+
+def _upload_validation_error(exc: ValueError) -> HTTPException:
+    if isinstance(exc, PDFUploadTooLargeError):
+        return HTTPException(
+            status_code=413,
+            detail="PDF exceeds the configured upload size limit.",
+        )
+    if isinstance(exc, PDFPageCountExceededError):
+        return HTTPException(
+            status_code=413,
+            detail="PDF exceeds the supported page limit.",
+        )
+    if isinstance(exc, EmptyPDFError):
+        return HTTPException(status_code=422, detail="The PDF contains no pages.")
+    if isinstance(exc, EncryptedPDFError):
+        return HTTPException(
+            status_code=422,
+            detail="Encrypted PDFs are not supported.",
+        )
+    return HTTPException(
+        status_code=400,
+        detail="Invalid PDF file. Upload a readable PDF document.",
+    )
+
+
+def _extraction_error(exc: ValueError) -> HTTPException:
+    if isinstance(exc, (PDFPageCountExceededError, PDFTextLimitExceededError)):
+        return HTTPException(
+            status_code=413,
+            detail="The PDF exceeds the supported extraction limits.",
+        )
+    return HTTPException(
+        status_code=422,
+        detail="The PDF text could not be extracted. Scanned/image-only PDFs are not supported.",
+    )
 
 
 # ---------------------------------------------------
@@ -68,23 +111,12 @@ async def upload_pdf(file: UploadFile = File(...)):
 
         log.info("PDF stored successfully: %s", filename)
 
-    except ValueError as e:
-
-        log.error("Validation error: %s", str(e))
-
-        raise HTTPException(
-            status_code=400,
-            detail=str(e)
-        )
-
-    except Exception as e:
-
+    except ValueError as exc:
+        log.warning("Rejected invalid PDF upload: filename=%s", filename)
+        raise _upload_validation_error(exc)
+    except Exception:
         log.exception("Upload failed")
-
-        raise HTTPException(
-            status_code=500,
-            detail=f"Upload failed: {e}"
-        )
+        raise HTTPException(status_code=500, detail="PDF upload failed.")
 
     return {
         "success": True,
@@ -98,138 +130,44 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 @router.post("/upload-rag", response_model=UploadRagResponse)
 async def upload_rag(file: UploadFile = File(...)):
-
-    """
-    Upload PDF →
-    Extract text →
-    Chunk →
-    Embed →
-    Store in ChromaDB
-    """
-
     filename = file.filename or ""
-
-    # ---------------------------------------------------
-    # VALIDATION
-    # ---------------------------------------------------
-
-    if not filename.lower().endswith(".pdf"):
-
-        raise HTTPException(
-            status_code=400,
-            detail="Only PDF files are supported"
-        )
-
-    # ---------------------------------------------------
-    # STORE PDF
-    # ---------------------------------------------------
-
     try:
-
         doc = store_pdf(
             upload_dir=settings.upload_dir,
             upload_file=file,
         )
-
         log.info("PDF uploaded for RAG: %s", filename)
-
-    except ValueError as e:
-
-        raise HTTPException(
-            status_code=400,
-            detail=str(e)
-        )
-
-    except Exception as e:
-
+    except ValueError as exc:
+        log.warning("Rejected invalid PDF upload: filename=%s", filename)
+        raise _upload_validation_error(exc)
+    except Exception:
         log.exception("PDF upload failed")
-
-        raise HTTPException(
-            status_code=500,
-            detail=f"Upload failed: {e}"
-        )
-
-    # ---------------------------------------------------
-    # LOCATE SAVED FILE
-    # ---------------------------------------------------
-
-    prefix = f"{doc['id']}__"
-
-    pdf_path = None
-
-    for name in os.listdir(settings.upload_dir):
-
-        if (
-            name.startswith(prefix)
-            and name.lower().endswith(".pdf")
-        ):
-
-            pdf_path = os.path.join(
-                settings.upload_dir,
-                name,
-            )
-
-            break
-
-    # ---------------------------------------------------
-    # FILE NOT FOUND
-    # ---------------------------------------------------
-
-    if not pdf_path:
-
-        raise HTTPException(
-            status_code=500,
-            detail="Stored PDF could not be located"
-        )
-
-    # ---------------------------------------------------
-    # EXTRACT PDF TEXT
-    # ---------------------------------------------------
+        raise HTTPException(status_code=500, detail="PDF upload failed.")
 
     try:
-
+        pdf_path = find_stored_pdf(settings.upload_dir, doc["id"])
         text = extract_pdf_text_from_path(pdf_path)
-
-        log.info("PDF text extracted successfully")
-
-    except Exception as e:
-
+    except PDFExtractionError as exc:
+        log.warning("PDF extraction failed: filename=%s", filename)
+        remove_stored_pdf(settings.upload_dir, doc["id"])
+        raise _extraction_error(exc)
+    except (PDFPageCountExceededError, PDFTextLimitExceededError) as exc:
+        log.warning("PDF extraction limit exceeded: filename=%s", filename)
+        remove_stored_pdf(settings.upload_dir, doc["id"])
+        raise _extraction_error(exc)
+    except Exception:
         log.exception("PDF extraction failed")
+        remove_stored_pdf(settings.upload_dir, doc["id"])
+        raise HTTPException(status_code=500, detail="PDF text extraction failed.")
 
+    if not text.strip():
+        remove_stored_pdf(settings.upload_dir, doc["id"])
         raise HTTPException(
-            status_code=500,
-            detail=f"Failed to parse PDF: {e}"
+            status_code=422,
+            detail="The PDF contains no selectable text. Scanned/image-only PDFs are not supported.",
         )
-
-    # ---------------------------------------------------
-    # CHUNKING
-    # ---------------------------------------------------
 
     try:
-
-        chunks = chunk_text(
-            text,
-            chunk_size=1000,
-            chunk_overlap=200,
-        )
-
-        log.info("Chunking completed: %s chunks", len(chunks))
-
-    except Exception as e:
-
-        log.exception("Chunking failed")
-
-        raise HTTPException(
-            status_code=500,
-            detail=f"Chunking failed: {e}"
-        )
-
-    # ---------------------------------------------------
-    # EMBEDDING + VECTOR STORAGE
-    # ---------------------------------------------------
-
-    try:
-
         from app.services.embedding_pipeline import (
             embed_and_store_pdf_chunks,
         )
@@ -240,24 +178,22 @@ async def upload_rag(file: UploadFile = File(...)):
             chunk_size=1000,
             chunk_overlap=200,
         )
-
-        log.info(
-            "Embeddings stored successfully: %s chunks",
-            len(embed_result.get("chunks", []))
-        )
-
-    except Exception as e:
-
+        if not embed_result.get("stored"):
+            remove_stored_pdf(settings.upload_dir, doc["id"])
+            raise HTTPException(
+                status_code=422,
+                detail="The PDF contains no selectable text to index.",
+            )
+        log.info("PDF indexed successfully: chunks=%s", embed_result["stored"])
+    except HTTPException:
+        raise
+    except Exception:
         log.exception("Embedding pipeline failed")
-
+        remove_stored_pdf(settings.upload_dir, doc["id"])
         raise HTTPException(
-            status_code=500,
-            detail=f"Embedding pipeline failed: {e}"
+            status_code=503,
+            detail="Document indexing is unavailable. Check the embedding model and Chroma service.",
         )
-
-    # ---------------------------------------------------
-    # SUCCESS RESPONSE
-    # ---------------------------------------------------
 
     return UploadRagResponse(
         document=doc,
@@ -301,55 +237,36 @@ async def extract_text(file: UploadFile = File(...)):
             upload_file=file,
         )
 
-    except Exception as e:
-
+    except ValueError as exc:
+        log.warning("Rejected invalid PDF upload: filename=%s", filename)
+        raise _upload_validation_error(exc)
+    except Exception:
+        log.exception("PDF upload failed")
         raise HTTPException(
             status_code=500,
-            detail=f"Upload failed: {e}"
+            detail="PDF upload failed.",
         )
-
-    # ---------------------------------------------------
-    # LOCATE FILE
-    # ---------------------------------------------------
-
-    prefix = f"{doc['id']}__"
-
-    pdf_path = None
-
-    for name in os.listdir(settings.upload_dir):
-
-        if (
-            name.startswith(prefix)
-            and name.lower().endswith(".pdf")
-        ):
-
-            pdf_path = os.path.join(
-                settings.upload_dir,
-                name,
-            )
-
-            break
-
-    if not pdf_path:
-
-        raise HTTPException(
-            status_code=500,
-            detail="Stored PDF not found"
-        )
-
-    # ---------------------------------------------------
-    # EXTRACT TEXT
-    # ---------------------------------------------------
 
     try:
-
+        pdf_path = find_stored_pdf(settings.upload_dir, doc["id"])
         text = extract_pdf_text_from_path(pdf_path)
-
-    except Exception as e:
-
+    except (PDFPageCountExceededError, PDFTextLimitExceededError, PDFExtractionError) as exc:
+        log.warning("PDF text extraction failed: filename=%s", filename)
+        remove_stored_pdf(settings.upload_dir, doc["id"])
+        raise _extraction_error(exc)
+    except Exception:
+        log.exception("PDF text extraction failed")
+        remove_stored_pdf(settings.upload_dir, doc["id"])
         raise HTTPException(
             status_code=500,
-            detail=f"Text extraction failed: {e}"
+            detail="PDF text extraction failed.",
+        )
+
+    if not text.strip():
+        remove_stored_pdf(settings.upload_dir, doc["id"])
+        raise HTTPException(
+            status_code=422,
+            detail="The PDF contains no selectable text. Scanned/image-only PDFs are not supported.",
         )
 
     # ---------------------------------------------------

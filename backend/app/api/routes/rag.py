@@ -3,52 +3,35 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException # type: ignore
 
 from app.api.routes.rag_models import RAGChatRequest, RAGChatResponse
-from app.services.embedding_pipeline import embed_and_store_pdf_chunks
-from app.services.pdf_text_extractor import extract_pdf_text_from_path
-from app.services.retriever import similarity_search_chunks
+from app.core.config import settings
+from app.services.file_service import find_stored_pdf
+from app.services.ollama_client import (
+    OllamaError,
+    OllamaModelNotFoundError,
+    OllamaUnavailableError,
+)
+from app.services.retriever import DocumentNotIndexedError, similarity_search_chunks
 from app.services.response_generation import generate_grounded_reply
+from app.services.vector_store import VectorStoreUnavailableError
 
 router = APIRouter(tags=["rag"])
 
 
 def _locate_stored_pdf(document_id: str) -> str:
-    # Mirror embeddings route's logic (stored file name uses doc['id']__ prefix)
-    import os
-
-    from app.core.config import settings
-
-    prefix = f"{document_id}__"
-    for name in os.listdir(settings.upload_dir):
-        if name.startswith(prefix) and name.lower().endswith(".pdf"):
-            return os.path.join(settings.upload_dir, name)
-    raise FileNotFoundError("Stored PDF not found")
+    return find_stored_pdf(settings.upload_dir, document_id)
 
 
 @router.post("/rag-chat", response_model=RAGChatResponse)
 def rag_chat(req: RAGChatRequest) -> RAGChatResponse:
-    """Single end-to-end workflow.
-
-    Assumes the PDF is already uploaded and stored.
-    Steps:
-      1) Extract text
-      2) Chunk + embed + store in Chroma
-      3) Retrieve relevant chunks
-      4) Generate grounded answer via Ollama
-    """
-
+    """Retrieve upload-indexed chunks for one stored PDF and generate an answer."""
+    document_id = str(req.document_id)
     try:
-        pdf_path = _locate_stored_pdf(req.document_id)
-        text = extract_pdf_text_from_path(pdf_path)
-
-        doc = {"id": req.document_id, "name": f"{req.document_id}.pdf"}
-        embed_and_store_pdf_chunks(
-            text=text,
-            document=doc,
-            chunk_size=1000,
-            chunk_overlap=200,
+        _locate_stored_pdf(document_id)
+        hits = similarity_search_chunks(
+            req.message,
+            top_k=req.top_k,
+            document_id=document_id,
         )
-
-        hits = similarity_search_chunks(req.message, top_k=req.top_k)
         retrieved_chunks: list[dict] = []
         for h in hits:
             doc_chunk = h.get("doc")
@@ -62,20 +45,48 @@ def rag_chat(req: RAGChatRequest) -> RAGChatResponse:
                 }
             )
 
+        if not retrieved_chunks:
+            return RAGChatResponse(
+                reply="I couldn't find relevant information in this document.",
+                retrieved_chunks=[],
+                document_id=document_id,
+            )
+
         result = generate_grounded_reply(
             question=req.message,
             retrieved_chunks=retrieved_chunks,
-            model="llama3",
         )
 
         return RAGChatResponse(
             reply=result.reply,
             retrieved_chunks=retrieved_chunks,
-            document_id=req.document_id,
+            document_id=document_id,
         )
 
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Document not found. Upload the PDF first.")
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"RAG workflow failed: {e}")
+    except DocumentNotIndexedError:
+        raise HTTPException(
+            status_code=409,
+            detail="This document has no indexed text chunks. Upload a readable, text-based PDF.",
+        )
+    except OllamaModelNotFoundError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="The configured Ollama model is unavailable. Verify OLLAMA_MODEL.",
+        ) from exc
+    except OllamaUnavailableError:
+        raise HTTPException(
+            status_code=503,
+            detail="Ollama is unavailable. Verify OLLAMA_HOST and that the configured model is running.",
+        )
+    except (VectorStoreUnavailableError, OllamaError):
+        raise HTTPException(
+            status_code=503,
+            detail="The Chroma index or Ollama service is unavailable.",
+        )
+    except Exception:  # noqa: BLE001
+        import logging
 
+        logging.getLogger(__name__).exception("RAG chat failed")
+        raise HTTPException(status_code=500, detail="RAG chat failed unexpectedly.")

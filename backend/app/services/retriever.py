@@ -1,36 +1,59 @@
 from __future__ import annotations
 
-from typing import Any
+from app.services.vector_store import VectorStoreManager, VectorStoreUnavailableError
+
+# The sample supported and unsupported questions measured 0.56 and 0.81 respectively.
+MAX_CHROMA_DISTANCE = 0.7
 
 
-def similarity_search_chunks(query: str, *, top_k: int = 3, persist_dir: str | None = None):
+class DocumentNotIndexedError(RuntimeError):
+    pass
+
+
+def similarity_search_chunks(
+    query: str,
+    *,
+    top_k: int = 3,
+    document_id: str | None = None,
+    persist_dir: str | None = None,
+):
     """Return similarity search results from persistent Chroma.
 
     The returned items are langchain Document objects.
     """
-    from app.services.vector_store import VectorStoreManager
-
     manager = VectorStoreManager(persist_dir=persist_dir)
-    vector_store = manager.build_or_load()
+    vector_store = manager.build_or_load(create_if_missing=False)
 
-    # similarity_search returns Documents. Some vectorstores can also provide scores
-    # via similarity_search_with_score; we try it first.
+    metadata_filter = {"document_id": document_id} if document_id is not None else None
     try:
-        docs_with_scores = vector_store.similarity_search_with_score(query, k=top_k)
-        return [
-            {
-                "doc": d,
-                "score": float(score) if score is not None else None,
-            }
-            for d, score in docs_with_scores
-        ]
-    except Exception:
-        docs = vector_store.similarity_search(query, k=top_k)
-        return [
-            {
-                "doc": d,
-                "score": None,
-            }
-            for d in docs
-        ]
+        if metadata_filter is not None:
+            indexed = vector_store.get(
+                where=metadata_filter,
+                limit=1,
+                include=["metadatas"],
+            )
+            if not indexed.get("ids"):
+                raise DocumentNotIndexedError(
+                    "The requested document has no indexed chunks."
+                )
 
+        docs_with_scores = vector_store.similarity_search_with_score(
+            query,
+            k=top_k,
+            filter=metadata_filter,
+        )
+    except DocumentNotIndexedError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise VectorStoreUnavailableError(
+            "Chroma failed while retrieving document chunks."
+        ) from exc
+
+    return [
+        {
+            "doc": doc,
+            "score": float(score),
+        }
+        for doc, score in docs_with_scores
+        if score is not None and float(score) <= MAX_CHROMA_DISTANCE
+    ]

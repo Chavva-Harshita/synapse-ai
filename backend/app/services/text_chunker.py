@@ -11,6 +11,8 @@ def chunk_text(text: str, chunk_size: int = 1000, chunk_overlap: int = 200) -> l
     text = text or ""
     if not text.strip():
         return []
+    if chunk_size < 1 or chunk_overlap < 0 or chunk_overlap >= chunk_size:
+        raise ValueError("chunk_size must be positive and chunk_overlap smaller than chunk_size")
 
     try:
         # Prefer LangChain (requested)
@@ -21,7 +23,7 @@ def chunk_text(text: str, chunk_size: int = 1000, chunk_overlap: int = 200) -> l
             chunk_overlap=chunk_overlap
         )
         return splitter.split_text(text)
-    except Exception:
+    except ImportError:
         # Minimal fallback (character-based sliding window)
         step = max(chunk_size - chunk_overlap, 1)
         chunks: list[str] = []
@@ -32,4 +34,3 @@ def chunk_text(text: str, chunk_size: int = 1000, chunk_overlap: int = 200) -> l
                 break
             i += step
         return [c.strip() for c in chunks if c.strip()]
-
