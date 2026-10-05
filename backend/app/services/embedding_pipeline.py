@@ -26,10 +26,15 @@ def embed_and_store_pdf_chunks(
             "chunk_overlap": chunk_overlap,
         }
 
+    document_id = document.get("id")
+    document_name = document.get("name")
+    if not isinstance(document_id, str) or not document_id:
+        raise ValueError("A stored document ID is required to index PDF chunks")
+
     metadatas = [
         {
-            "document_id": document.get("id"),
-            "document_name": document.get("name"),
+            "document_id": document_id,
+            "document_name": document_name or "",
             "chunk_index": i,
             "chunk_size": chunk_size,
             "chunk_overlap": chunk_overlap,
@@ -41,7 +46,7 @@ def embed_and_store_pdf_chunks(
     stored = manager.add_texts(
         texts=chunks,
         metadatas=metadatas,
-        ids=None,
+        ids=[f"{document_id}:{i}" for i in range(len(chunks))],
         embedding_model_name=embedding_model_name,
     )
 
@@ -51,4 +56,3 @@ def embed_and_store_pdf_chunks(
         "chunk_size": chunk_size,
         "chunk_overlap": chunk_overlap,
     }
-

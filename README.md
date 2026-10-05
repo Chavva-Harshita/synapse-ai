@@ -38,8 +38,8 @@ flowchart LR
     D --> E[(ChromaDB Vector Store)]
     E --> F[User Query]
     F --> G[Embed Query]
-    G --> H[Similarity Search]
-    H --> I[Retrieve Context]
+    G --> H[Document-scoped Similarity Search]
+    H --> I[Retrieve Indexed Context]
     I --> J[Build Grounded Prompt]
     J --> K[Ollama LLM]
     K --> L[Grounded Answer]
@@ -55,7 +55,7 @@ Large documents are hard to query, and traditional LLMs don't know your private 
 | --- | --- |
 | 📄 **Large PDFs are difficult to search manually** | Full-text extraction + semantic search finds the *meaning*, not just keywords. |
 | ⏱️ **Users waste hours reading entire documents** | Ask a question and get an instant, document-aware answer. |
-| 💭 **Generic AI models hallucinate** | The LLM answers **only from retrieved context** — it is instructed to say *"I don't know"* when the answer isn't in the document. |
+| 💭 **Generic AI models may hallucinate** | The LLM is instructed to use retrieved context and say *"I don't know"* when it is insufficient; retrieval also rejects chunks above its current distance threshold. This reduces risk but does not guarantee grounded answers. |
 | 🔒 **Private documents stay private** | Everything runs locally with Ollama — documents never leave your machine. |
 | 🏢 **Businesses need secure document chat** | Grounded, source-anchored answers on your own files, fully self-hosted. |
 
@@ -71,7 +71,9 @@ A traditional LLM has a fixed knowledge cutoff and no access to your documents. 
 Drag-and-drop or browse to upload PDF files. A smart validation layer verifies the file extension, the `%PDF-` signature, and readability with `PyPDF2` before accepting the document.
 
 ### 🔎 Automatic Text Extraction
-The backend extracts raw text from every page of the PDF using `PyPDF2`, cleaning up whitespace and concatenating pages into one searchable body of text.
+The backend extracts selectable text from every page of the PDF using `PyPDF2`, cleaning up whitespace and concatenating pages into one searchable body of text. Image-only/scanned PDFs are rejected with a clear error; OCR is not currently supported.
+
+PDF ingestion is bounded by default to 25 MiB, 500 pages, and 5,000,000 extracted characters. These limits can be configured in the backend environment.
 
 ### 🧩 Intelligent Text Chunking
 Extracted text is split into overlapping chunks (default `chunk_size=1000`, `chunk_overlap=200`) using LangChain's `RecursiveCharacterTextSplitter`, with a robust character-based fallback splitter.
@@ -83,10 +85,10 @@ Every chunk is converted into a dense vector using `sentence-transformers/all-Mi
 Embeddings are persisted in a local **ChromaDB** vector store (`synapse_ai_docs` collection), enabling fast and persistent semantic retrieval across restarts.
 
 ### 🎯 Semantic Similarity Search
-When you ask a question, the query is embedded and matched against stored chunks using cosine similarity (`top_k=5` by default), returning the most relevant passages.
+When you ask a question, the query is embedded and matched against chunks already stored at upload time. The `/api/rag-chat` route filters retrieval to the requested uploaded document (`top_k=5` by default), then excludes results above the current Chroma distance cutoff of `0.7`; chat does not re-extract or re-embed the PDF. This cutoff was measured against the small end-to-end sample and is conservative; it may reject some relevant chunks on other documents.
 
 ### 🤖 Retrieval-Augmented Generation
-Relevant chunks are assembled into a grounding prompt and sent to a local **Ollama** model, which answers using **only** the provided context — dramatically reducing hallucination.
+Relevant chunks are assembled into a grounding prompt and sent to a local **Ollama** model, which is instructed to answer from the provided context. This improves grounding behavior but cannot guarantee that a model never hallucinates.
 
 ### 💬 AI-Powered Document Chat
 A polished chat panel streams intelligent, document-grounded responses. If no document has been uploaded yet, the assistant politely prompts you to upload a PDF first.
@@ -174,7 +176,7 @@ Response Returned to User
 | [LangChain](https://www.langchain.com) | Text splitting & vector store wrappers |
 | [Sentence Transformers](https://sbert.net) | `all-MiniLM-L6-v2` embedding model |
 | [ChromaDB](https://www.trychroma.com) | Persistent vector database |
-| [Ollama](https://ollama.com) | Local LLM inference (e.g. `llama3`) |
+| [Ollama](https://ollama.com) | Local LLM inference (default model: `qwen2.5-coder:1.5b`) |
 | [Requests](https://requests.readthedocs.io) | HTTP client to Ollama |
 
 ---
@@ -324,6 +326,26 @@ uvicorn app.main:app --reload --port 8000
 
 > ✅ Backend will be live at **http://localhost:8000** — interactive API docs at **http://localhost:8000/docs**
 
+### Backend Tests
+
+From the `backend/` directory, run the deterministic RAG tests with:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Run the small retrieval-threshold evaluation with the production embedding model and an ephemeral Chroma collection:
+
+```bash
+python -m scripts.evaluate_retrieval
+```
+
+To smoke-test PDFs already in the configured upload directory without modifying the persistent index:
+
+```bash
+python -m scripts.validate_uploaded_pdfs
+```
+
 ### 3️⃣ Frontend Setup
 
 ```bash
@@ -345,9 +367,6 @@ npm run dev
 # https://ollama.com/download
 
 # Pull the default chat model used by the RAG endpoints
-ollama pull llama3
-
-# (Optional) Alternative model referenced in some services
 ollama pull qwen2.5-coder:1.5b
 
 # Start the Ollama server
@@ -364,7 +383,7 @@ Browse to **http://localhost:5173**, upload a PDF, and start chatting with your 
 
 ## 🔧 Environment Variables
 
-All variables are optional — sensible defaults are baked in.
+The backend loads `backend/.env` if present. Start with [`backend/.env.example`](./backend/.env.example); secrets and runtime data are excluded by `.gitignore`.
 
 | Variable | Default | Description |
 | --- | --- | --- |
@@ -372,8 +391,22 @@ All variables are optional — sensible defaults are baked in.
 | `SYNAPSE_UPLOAD_DIR` | `./uploads` | Directory where uploaded PDFs are stored (backend). |
 | `SYNAPSE_CHROMA_DIR` | `./chroma_db` | Directory where the ChromaDB vector store persists (backend). |
 | `OLLAMA_HOST` | `http://localhost:11434` | Base URL of the Ollama inference server (backend). |
+| `OLLAMA_MODEL` | `qwen2.5-coder:1.5b` | Ollama model used by all chat routes; pull it locally or set this to another installed model. |
+| `CORS_ALLOWED_ORIGINS` | Local Vite origins | Comma-separated list of browser origins allowed to call the backend. |
+| `MAX_PDF_UPLOAD_BYTES` | `26214400` | Maximum accepted PDF upload size in bytes (25 MiB). |
+| `MAX_PDF_PAGES` | `500` | Maximum number of pages per PDF. |
+| `MAX_PDF_EXTRACTED_CHARS` | `5000000` | Maximum extracted PDF text size in characters. |
 
-> 💡 To set a variable, create a `.env` file in the `frontend/` (for `VITE_*`) or `backend/` (for `SYNAPSE_*` / `OLLAMA_*`) directory — or export it in your shell.
+> 💡 `VITE_BACKEND_URL` belongs in `frontend/.env`; backend variables belong in `backend/.env` or the process environment.
+
+### Chroma maintenance
+
+The legacy Chroma cleanup utility is dry-run by default. Stop the backend before applying changes; `--apply` requires a new backup directory outside the Chroma directory, verifies the snapshot, preserves one exact-text chunk per `(document_id, chunk_index)`, and moves rows to stable IDs without regenerating embeddings. To restore, run the same script with `--restore-from <backup-directory>` while the backend is stopped; the pre-restore index is preserved beside the restored directory.
+
+```bash
+python scripts/chroma_maintenance.py --persist-dir ./chroma_db --upload-dir ./uploads
+python scripts/chroma_maintenance.py --persist-dir ./chroma_db --upload-dir ./uploads --apply --backup-dir C:/safe-backups/synapse-chroma-before-cleanup
+```
 
 ---
 
@@ -381,7 +414,8 @@ All variables are optional — sensible defaults are baked in.
 
 | Method | Endpoint | Description |
 | --- | --- | --- |
-| `GET` | `/api/health` | Health check — returns `{"status": "ok"}`. |
+| `GET` | `/api/health` | Liveness — confirms that FastAPI is running. |
+| `GET` | `/api/ready` | Readiness — checks Chroma, the embedding model, and configured Ollama model; returns HTTP 503 while a required dependency is unavailable. |
 | `POST` | `/api/upload` | Upload & store a PDF **only** (no RAG processing). |
 | `POST` | `/api/upload-rag` | **Full ingestion**: upload → extract → chunk → embed → store in ChromaDB. |
 | `POST` | `/api/extract-text` | Upload a PDF and return its extracted raw text + chunks. |
@@ -493,7 +527,7 @@ By studying this project you'll learn:
 - 🧬 **Embeddings** — How text becomes dense vectors (`all-MiniLM-L6-v2`).
 - 🗄️ **Vector Databases** — Persistent storage and similarity search with ChromaDB.
 - 🎯 **Semantic Search** — Cosine similarity and `top_k` retrieval.
-- ✍️ **Prompt Engineering** — Designing grounding prompts that prevent hallucination.
+- ✍️ **Prompt Engineering** — Designing grounding prompts that reduce hallucination risk.
 - 🤖 **LLM Integration** — Calling Ollama's `/api/generate` locally.
 - 🔗 **RAG** — The full retrieval-augmented generation pipeline.
 - 🏛️ **System Design** — Clean separation of routes, services, and models.
@@ -578,4 +612,3 @@ SOFTWARE.
 Made with ❤️ and a lot of ☕ — **Synapse AI** · _Reads. Remembers. Responds._
 
 </div>
-

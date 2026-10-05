@@ -25,12 +25,14 @@ def build_retrieved_context(chunks: list[dict]) -> str:
     return "\n\n".join(parts).strip()
 
 
-def generate_grounded_reply(*, question: str, retrieved_chunks: list[dict], model: str = "llama3") -> GenerationResult:
+def generate_grounded_reply(*, question: str, retrieved_chunks: list[dict]) -> GenerationResult:
     """Generate a grounded reply using Ollama and the grounding prompt."""
 
     context = build_retrieved_context(retrieved_chunks)
-    prompt = GROUNDING_PROMPT.render(question=question, context=context or "")
+    prompt = GROUNDING_PROMPT.render(
+        question=question,
+        context=context or "No retrieved context is available.",
+    )
 
-    reply = generate_with_ollama(prompt=prompt, model=model)
+    reply = generate_with_ollama(prompt=prompt)
     return GenerationResult(reply=reply)
-
