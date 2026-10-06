@@ -1,7 +1,8 @@
 // Intentionally left empty (placeholder for future split)
 import axios from "axios";
+import { BACKEND_URL } from "./client";
 
-const API_URL = "http://127.0.0.1:8000/api";
+const API_URL = `${BACKEND_URL}/api`;
 
 export async function uploadPDF(file: File) {
   const formData = new FormData();
@@ -9,7 +10,7 @@ export async function uploadPDF(file: File) {
   formData.append("file", file);
 
   const response = await axios.post(
-    "http://127.0.0.1:8000/api/upload-rag",
+    `${API_URL}/upload-rag`,
     formData,
     {
       headers: {
@@ -20,4 +21,3 @@ export async function uploadPDF(file: File) {
 
   return response.data;
 }
-
