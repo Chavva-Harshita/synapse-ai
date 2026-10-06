@@ -61,7 +61,7 @@ Large documents are hard to query, and traditional LLMs don't know your private 
 
 ### Why RAG?
 
-A traditional LLM has a fixed knowledge cutoff and no access to your documents. **RAG** bridges that gap by retrieving the most relevant text chunks from a vector database at query time and feeding them to the LLM as context — so answers are **accurate, up-to-date, and grounded** in your actual content.
+A traditional LLM has a fixed knowledge cutoff and no access to your documents. **RAG** bridges that gap by retrieving text chunks from a vector database at query time and feeding them to the LLM as context, helping answers use information from your uploaded content.
 
 ---
 
@@ -85,7 +85,7 @@ Every chunk is converted into a dense vector using `sentence-transformers/all-Mi
 Embeddings are persisted in a local **ChromaDB** vector store (`synapse_ai_docs` collection), enabling fast and persistent semantic retrieval across restarts.
 
 ### 🎯 Semantic Similarity Search
-When you ask a question, the query is embedded and matched against chunks already stored at upload time. The `/api/rag-chat` route filters retrieval to the requested uploaded document (`top_k=5` by default), then excludes results above the current Chroma distance cutoff of `0.7`; chat does not re-extract or re-embed the PDF. This cutoff was measured against the small end-to-end sample and is conservative; it may reject some relevant chunks on other documents.
+When you ask a question, the query is embedded and matched against chunks already stored at upload time. The `/api/rag-chat` route filters retrieval to the requested uploaded document (`top_k=5` by default), then excludes results above the current Chroma distance cutoff of `0.7`; chat does not re-extract or re-embed the PDF. A small synthetic evaluation found overlapping supported-query distances (0.295–1.198) and unsupported-query distances (0.553–1.668). At 0.7, 1 of 4 supported queries and 2 of 5 unsupported queries were accepted. Keep this as an initial heuristic only; it is not a universal or accuracy-validated threshold.
 
 ### 🤖 Retrieval-Augmented Generation
 Relevant chunks are assembled into a grounding prompt and sent to a local **Ollama** model, which is instructed to answer from the provided context. This improves grounding behavior but cannot guarantee that a model never hallucinates.
@@ -340,11 +340,38 @@ Run the small retrieval-threshold evaluation with the production embedding model
 python -m scripts.evaluate_retrieval
 ```
 
+The recorded evaluation covered 4 supported and 5 unsupported questions. Their distance ranges overlapped, so the current `0.7` cutoff remains an initial heuristic rather than a validated universal threshold; distances are not confidence scores.
+
 To smoke-test PDFs already in the configured upload directory without modifying the persistent index:
 
 ```bash
 python -m scripts.validate_uploaded_pdfs
 ```
+
+## Local deployment-shaped Compose stack
+
+The Compose setup keeps FastAPI and Ollama on the same host and serves the production-built React app through Nginx. Only the web service is published; FastAPI and Ollama remain private on the Compose network. The frontend uses relative `/api` requests, so the browser and API share an origin.
+
+Create a local Compose environment file from the root example, then start the services:
+
+```bash
+cp .env.example .env
+docker compose up --build -d
+docker compose exec ollama ollama pull qwen2.5-coder:1.5b
+```
+
+The model is stored in the persistent `ollama_data` volume, not in the image. On first use, the embedding model is downloaded from Hugging Face and cached under the persistent Synapse data volume. Readiness returns `503` until Chroma, the embedding model, and the configured Ollama model are available:
+
+```bash
+curl http://localhost:8080/api/health
+curl http://localhost:8080/api/ready
+```
+
+The `synapse_data` volume holds uploaded PDFs, Chroma files, and the embedding cache; `ollama_data` holds Ollama models. These survive container rebuilds but are not backups. Keep the single backend replica, place Docker's volume storage on a persistent host disk, and schedule off-host backups before accepting important documents. Replacing the VM without restoring those volumes loses the documents and index.
+
+The root `.env.example` binds the web port to loopback by default. Do not expose plain HTTP directly to the public internet; configure TLS termination, firewall rules, and a trusted proxy before changing `SYNAPSE_BIND_ADDRESS` to `0.0.0.0`. Nginx applies request limits to chat and upload endpoints; behind another proxy, configure trusted client-IP forwarding so those per-IP limits use real client addresses. This is a bounded demo safeguard, not authentication or a substitute for spend/abuse monitoring.
+
+This local Compose setup uses CPU-only PyTorch for Hugging Face embeddings and does not configure GPU passthrough. The current Ollama model can run CPU-only, but expect slower generation than a GPU-backed host. Re-check hardware and platform limits before cloud deployment.
 
 ### 3️⃣ Frontend Setup
 

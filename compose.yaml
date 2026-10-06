@@ -1,0 +1,65 @@
+services:
+  ollama:
+    image: ${OLLAMA_IMAGE:-ollama/ollama:0.35.1}
+    restart: unless-stopped
+    expose:
+      - "11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:1.5b}
+      SYNAPSE_UPLOAD_DIR: ${SYNAPSE_UPLOAD_DIR:-/data/uploads}
+      SYNAPSE_CHROMA_DIR: ${SYNAPSE_CHROMA_DIR:-/data/chroma}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      MAX_PDF_UPLOAD_BYTES: ${MAX_PDF_UPLOAD_BYTES:-26214400}
+      MAX_PDF_PAGES: ${MAX_PDF_PAGES:-500}
+      MAX_PDF_EXTRACTED_CHARS: ${MAX_PDF_EXTRACTED_CHARS:-5000000}
+    expose:
+      - "8000"
+    volumes:
+      - synapse_data:/data
+    depends_on:
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_BACKEND_URL: ""
+    restart: unless-stopped
+    ports:
+      - "${SYNAPSE_BIND_ADDRESS:-127.0.0.1}:${SYNAPSE_PORT:-8080}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  synapse_data:
+  ollama_data:

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from app.services.vector_store import VectorStoreManager, VectorStoreUnavailableError
 
-# The sample supported and unsupported questions measured 0.56 and 0.81 respectively.
+# The small evaluation had overlapping supported (0.295-1.198) and unsupported
+# (0.553-1.668) distances; this remains an initial heuristic, not a universal cutoff.
 MAX_CHROMA_DISTANCE = 0.7
 
 

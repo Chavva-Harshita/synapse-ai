@@ -30,6 +30,9 @@ backend/uploads/
 chroma_db/
 backend/chroma_db/
 
+# Local container data
+.runtime/
+
 # Logs
 *.log
 
